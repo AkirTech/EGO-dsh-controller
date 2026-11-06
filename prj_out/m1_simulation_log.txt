@@ -1,0 +1,36 @@
+
+****** xsim v2017.1 (64-bit)
+  **** SW Build 1846317 on Fri Apr 14 18:55:03 MDT 2017
+  **** IP Build 1846188 on Fri Apr 14 20:52:08 MDT 2017
+    ** Copyright 1986-2017 Xilinx, Inc. All Rights Reserved.
+
+source xsim.dir/s1/xsim_script.tcl
+# xsim {s1} -autoloadwcfg -tclbatch {run.tcl}
+Vivado Simulator 2017.1
+Time resolution is 1 ps
+source run.tcl
+## run 3ms
+
+==========================================
+  EGO-dsh-controller milestone M1 test
+==========================================
+
+  [1] key_debounce
+
+  [2] status_fsm
+
+  [3] led_state_drv
+
+  [4] disp_seg
+
+  [5] disp_content digit order and pages
+
+------------------------------------------
+  TOTAL_CASES = 52
+  FAILED      = 0
+  RESULT      = PASS
+------------------------------------------
+
+$finish called at time : 346036 ns : File "K:/Verilog/_tmp_v2/tb_m1.v" Line 474
+## exit
+INFO: [Common 17-206] Exiting xsim at Fri Nov  6 15:17:07 2026...

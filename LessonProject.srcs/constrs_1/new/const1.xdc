@@ -1,12 +1,54 @@
 # ==============================================================================
-# EGO1 (xc7a35tcsg324-1) pin constraints for the 8-digit 7-segment display
-# Pin source: official EGo1 User Manual, section 5.4 (7-segment display)
+# EGO1 (xc7a35tcsg324-1) pin constraints
+# Pin source: official EGo1 User Manual sections 3, 5.1, 5.3, 5.4
 # ==============================================================================
 
 # ---- System clock: 100 MHz oscillator on P17 ----
 set_property PACKAGE_PIN P17 [get_ports clk]
 set_property IOSTANDARD LVCMOS33 [get_ports clk]
 create_clock -period 10.000 -name sys_clk [get_ports clk]
+
+# ==============================================================================
+# Buttons, active HIGH (manual 5.1): idle 0, pressed 1
+#   key[0] = S2 PB2 R15  center
+#   key[1] = S3 PB3 V1   left
+#   key[2] = S0 PB0 R11  right
+#   key[3] = S1 PB1 R17  spare
+#   key[4] = S4 PB4 U4   spare
+# ==============================================================================
+set_property PACKAGE_PIN R15 [get_ports {key[0]}]
+set_property PACKAGE_PIN V1  [get_ports {key[1]}]
+set_property PACKAGE_PIN R11 [get_ports {key[2]}]
+set_property PACKAGE_PIN R17 [get_ports {key[3]}]
+set_property PACKAGE_PIN U4  [get_ports {key[4]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {key[0]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {key[1]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {key[2]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {key[3]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {key[4]}]
+
+# ==============================================================================
+# Indicator lamps, two of them
+#   led_state[0] = K1  on-board D8  : "alive" lamp, always on
+#   led_state[1] = K6  on-board D12 : activity lamp
+#                                     FREE off / RUNNING 1 Hz blink / WAITING on
+#
+# Board notes
+#   The EGo1 base board has no RGB LED; every one of the 16 on-board LEDs
+#   (D0-D15) is green per manual section 5.3. The two lamps above are ordinary
+#   green LEDs, so the status is read from the on/off/blink pattern rather
+#   than from colour.
+#
+#   The user refers to these as "D9" and "D13", but manual 5.3 maps D8 to K1
+#   and D12 to K6, so the D numbers given offline do not line up with the
+#   manual. The ball positions K1 and K6 were stated explicitly and are used
+#   here; if the panel silkscreen numbers them differently, only these two
+#   PACKAGE_PIN lines change and the RTL stays untouched.
+# ==============================================================================
+set_property PACKAGE_PIN K1 [get_ports {led_state[0]}]
+set_property PACKAGE_PIN K6 [get_ports {led_state[1]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {led_state[0]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {led_state[1]}]
 
 # ==============================================================================
 # DN0 : digits 1..4

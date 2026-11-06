@@ -3,7 +3,7 @@
 <!--                                                         -->
 <!-- Copyright 1986-2017 Xilinx, Inc. All Rights Reserved.   -->
 
-<Project Version="7" Minor="20" Path="K:/Verilog/LessonProject/LessonProject.xpr">
+<Project Version="7" Minor="20" Path="K:/Verilog/LessonProject/EGO-dsh-controller/LessonProject.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
     <Option Name="Id" Val="f7f44fcf51c34527ac30975d9b2e5bbc"/>

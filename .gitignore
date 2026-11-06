@@ -1,0 +1,39 @@
+# ==============================================================================
+# Vivado generated output -- directory-scoped so it cannot catch source files
+# These are rebuilt from .xpr + .srcs. runs/ alone is ~5.5 MB of .dcp / .pb /
+# .rpt / log churn that changes on every single build, which makes every diff
+# unreadable and bloats history.
+# ==============================================================================
+
+/LessonProject.runs/
+/LessonProject.cache/
+/LessonProject.hw/
+/.Xil/
+
+# Simulation run output
+/xsim.dir/
+/xsim.jou
+/xsim.log
+/webtalk*
+/vivado.log
+/vivado.jou
+*.backup.jou
+*.backup.log
+
+# ==============================================================================
+# Build artifacts left outside the run directories
+# ==============================================================================
+
+*.ltx
+*.mcs
+*.wdb
+*.wcfg
+
+# ==============================================================================
+# Local scratch
+# ==============================================================================
+
+_tmp_*/
+_backup_*/
+Thumbs.db
+desktop.ini

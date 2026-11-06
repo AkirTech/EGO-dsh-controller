@@ -114,24 +114,6 @@ module smg_ip #(
     endgenerate
 
     //------------------------------------------------------------------
-    // Display page counter: left decrements, right increments.
-    // Page count is 3, so wrap at 3.
-    //------------------------------------------------------------------
-    reg [1:0] page;
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            page <= 2'd0;
-        end else if (key_pp[2]) begin
-            // right: next page
-            page <= (page == 2'd2) ? 2'd0 : page + 2'd1;
-        end else if (key_pp[1]) begin
-            // left: previous page
-            page <= (page == 2'd0) ? 2'd2 : page - 2'd1;
-        end
-    end
-
-    //------------------------------------------------------------------
     // Status machine
     //   M1: the center key cycles the state for bench observation.
     //   M2+: the PC drives it over the serial link and this pulse is unused.
@@ -153,10 +135,69 @@ module smg_ip #(
     );
 
     //------------------------------------------------------------------
+    // Display page
+    //   Normal operation: left = previous page, right = next page.
+    //
+    //   While a question is pending the page is FORCED to 2 (the ASK page),
+    //   because that is the only page where the up/down keys have a visible
+    //   effect. Without this the user could be staring at the clock while
+    //   pressing up/down and see nothing happen.
+    //------------------------------------------------------------------
+    reg [1:0] page_manual;      // page chosen by the left/right keys
+    wire [1:0] page;            // page actually shown
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            page_manual <= 2'd0;
+        end else if (key_pp[2]) begin
+            // right: next page
+            page_manual <= (page_manual == 2'd2) ? 2'd0 : page_manual + 2'd1;
+        end else if (key_pp[1]) begin
+            // left: previous page
+            page_manual <= (page_manual == 2'd0) ? 2'd2 : page_manual - 2'd1;
+        end
+    end
+
+    assign page = is_waiting ? 2'd2 : page_manual;
+
+    //------------------------------------------------------------------
+    // Option selection (answers to an Agent question)
+    //
+    //   Up   = key[4] = U4  : option + 1
+    //   Down = key[3] = R17 : option - 1
+    //   Center = key[0] = R15 : confirm
+    //
+    //   Active while a question is pending. In M1 that state is reached with
+    //   the center key's debug cycling, so the feature can be exercised on
+    //   the bench; from M2 the QUESTION_OPEN frame drives it instead.
+    //
+    //   Note the center key does double duty: in DEBUG_MODE it both cycles
+    //   the state machine AND confirms, which is intentional so one button
+    //   can walk the whole flow on a bare board.
+    //------------------------------------------------------------------
+    wire [3:0] opt_index;
+    wire [3:0] opt_confirmed_idx;
+    wire       opt_confirmed;
+
+    option_sel #(
+        .MAX_INDEX (4'd8)
+    ) u_opt (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .active        (is_waiting),
+        .up            (key_pp[4]),      // U4
+        .down          (key_pp[3]),      // R17
+        .confirm       (key_pp[0]),      // R15
+        .option        (opt_index),
+        .confirmed     (opt_confirmed),
+        .confirmed_idx (opt_confirmed_idx)
+    );
+
+    //------------------------------------------------------------------
     // Display content
     //   The day-of-week digit is a constant 1 in M1 and will be loaded from
     //   the serial TIME_SYNC frame in M2. The session number and question
-    //   counters are likewise kept for M2+.
+    //   index are likewise kept for M2+.
     //------------------------------------------------------------------
     wire [47:0] chars;
     wire [7:0]  dps;
@@ -170,7 +211,7 @@ module smg_ip #(
         .session  (4'h1),         // M2+: current session number
         .page     (page),
         .q_index  (4'h1),         // M2+: driven from received frames
-        .q_total  (4'h1),
+        .option   (opt_index),    // live highlight from option_sel
         .chars    (chars),
         .dps      (dps)
     );

@@ -119,7 +119,7 @@ module tb_m1;
     reg  [3:0] dc_sess  = 4'h1;
     reg  [1:0] dc_page  = 2'd0;
     reg  [3:0] dc_qi    = 4'h1;
-    reg  [3:0] dc_qt    = 4'h1;
+    reg  [3:0] dc_opt   = 4'h0;
     reg        ce1      = 1'b0;
     wire [47:0] dc_chars;
     wire [7:0]  dc_dps;
@@ -133,10 +133,60 @@ module tb_m1;
         .session (dc_sess),
         .page    (dc_page),
         .q_index (dc_qi),
-        .q_total (dc_qt),
+        .option  (dc_opt),
         .chars   (dc_chars),
         .dps     (dc_dps)
     );
+
+    //==================================================================
+    // Part 4b : option_sel
+    //==================================================================
+    reg        os_active  = 1'b0;
+    reg        os_up      = 1'b0;
+    reg        os_down    = 1'b0;
+    reg        os_confirm = 1'b0;
+    wire [3:0] os_option;
+    wire [3:0] os_conf_idx;
+    wire       os_confirmed;
+
+    option_sel #(
+        .MAX_INDEX (4'd8)
+    ) u_os (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .active        (os_active),
+        .up            (os_up),
+        .down          (os_down),
+        .confirm       (os_confirm),
+        .option        (os_option),
+        .confirmed     (os_confirmed),
+        .confirmed_idx (os_conf_idx)
+    );
+
+    // One-cycle pulse helper for driving option_sel inputs
+    task pulse_up;
+        begin
+            @(negedge clk); os_up = 1'b1;
+            @(posedge clk);
+            @(negedge clk); os_up = 1'b0;
+        end
+    endtask
+
+    task pulse_down;
+        begin
+            @(negedge clk); os_down = 1'b1;
+            @(posedge clk);
+            @(negedge clk); os_down = 1'b0;
+        end
+    endtask
+
+    task pulse_confirm;
+        begin
+            @(negedge clk); os_confirm = 1'b1;
+            @(posedge clk);
+            @(negedge clk); os_confirm = 1'b0;
+        end
+    endtask
 
     // One counted second: the enable is held across exactly one rising edge.
     task tick1hz;
@@ -440,13 +490,13 @@ module tb_m1;
         //   DK1 = A = chars[5:0]
         //   DK2 = S = chars[11:6]
         //   DK3 = H = chars[17:12]
-        //   DK4 = index = chars[23:18]
-        //   DK5 = '-'   = chars[29:24]
-        //   DK6 = total = chars[35:30]
+        //   DK4 = question index     = chars[23:18]
+        //   DK5 = '-'                = chars[29:24]
+        //   DK6 = selected option    = chars[35:30]
         //--------------------------------------------------------------
         dc_page = 2'd2;
         dc_qi   = 4'h1;
-        dc_qt   = 4'h2;
+        dc_opt  = 4'h3;
         @(posedge clk); #1;
         chk("page2 DK1..DK3 spell A S H",
             dc_chars[5:0]   === 6'h0A &&
@@ -456,9 +506,64 @@ module tb_m1;
               dc_chars[17:12] === 6'h10))
             $display("    got DK1=%0h DK2=%0h DK3=%0h",
                      dc_chars[5:0], dc_chars[11:6], dc_chars[17:12]);
-        chk("page2 DK4 == '1' index", dc_chars[23:18] === 6'h01);
-        chk("page2 DK5 == '-'",       dc_chars[29:24] === 6'h1A);
-        chk("page2 DK6 == '2' total", dc_chars[35:30] === 6'h02);
+        chk("page2 DK4 == '1' question index", dc_chars[23:18] === 6'h01);
+        chk("page2 DK5 == '-'",               dc_chars[29:24] === 6'h1A);
+        chk("page2 DK6 == '3' selected option", dc_chars[35:30] === 6'h03);
+        if (dc_chars[35:30] !== 6'h03)
+            $display("    got DK6=%0h (expected option 3)", dc_chars[35:30]);
+
+        //--------------------------------------------------------------
+        // 15. option_sel: increment, decrement, wrap, confirm, inactive
+        //--------------------------------------------------------------
+        $display("");
+        $display("  [6] option_sel");
+
+        // Not active: stays at 0 no matter what is pressed
+        os_active = 1'b0;
+        repeat (2) @(posedge clk);
+        chk("inactive starts at option 0", os_option === 4'd0);
+        pulse_up;
+        chk("up while inactive is ignored", os_option === 4'd0);
+
+        // Activate and step up
+        os_active = 1'b1;
+        repeat (2) @(posedge clk);
+        pulse_up;  chk("up -> option 1", os_option === 4'd1);
+        pulse_up;  chk("up -> option 2", os_option === 4'd2);
+        pulse_up;  chk("up -> option 3", os_option === 4'd3);
+        if (os_option !== 4'd3) $display("    got option=%0d", os_option);
+
+        // Step down
+        pulse_down; chk("down -> option 2", os_option === 4'd2);
+        pulse_down; chk("down -> option 1", os_option === 4'd1);
+
+        // Wrap at zero going down
+        pulse_down; chk("down -> option 0", os_option === 4'd0);
+        pulse_down; chk("down from 0 wraps to MAX_INDEX (8)", os_option === 4'd8);
+
+        // Wrap at MAX going up
+        pulse_up;   chk("up from 8 wraps to 0", os_option === 4'd0);
+
+        // Confirm latches the current value
+        pulse_up; pulse_up;                       // -> 2
+        pulse_confirm;
+        repeat (2) @(posedge clk);
+        chk("confirm latches index 2", os_conf_idx === 4'd2);
+        chk("confirm emitted a pulse", os_confirmed === 1'b0); // already cleared
+        chk("option unchanged after confirm", os_option === 4'd2);
+
+        // Confirm pulse is exactly one cycle wide
+        @(negedge clk); os_confirm = 1'b1;
+        @(posedge clk); #1;
+        chk("confirm pulse is high for one cycle", os_confirmed === 1'b1);
+        @(negedge clk); os_confirm = 1'b0;
+        @(posedge clk); #1;
+        chk("confirm pulse falls next cycle", os_confirmed === 1'b0);
+
+        // Deactivating resets the selection
+        os_active = 1'b0;
+        repeat (2) @(posedge clk);
+        chk("deactivating resets option to 0", os_option === 4'd0);
 
         //--------------------------------------------------------------
         // Tally

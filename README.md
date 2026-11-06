@@ -42,7 +42,8 @@ EGO-dsh-controller/
 │       ├── key_debounce.v            按键消抖 + 单击/长按
 │       ├── status_fsm.v              FREE/RUNNING/WAITING 三态机
 │       ├── led_state_drv.v           双灯状态编码
-│       ├── tb_m1.v                   自检测试平台（52 用例）
+│       ├── option_sel.v              选项高亮（上/下增减、确认锁存）
+│       ├── tb_m1.v                   自检测试平台（68 用例）
 │       └── ctrl_led.v, tb.v          历史文件，已排除出综合
 ├── prj_out/                          交付物
 │   ├── m1_buttons_leds.bit           可烧录 bit 文件
@@ -66,14 +67,14 @@ EGO-dsh-controller/
 ```powershell
 $env:PATH = "D:\Vivado\Vivado\2017.1\bin;$env:PATH"
 cd LessonProject.srcs\sources_1\new
-xvlog.bat disp_seg.v disp_scan8.v key_debounce.v status_fsm.v led_state_drv.v disp_content.v smg_ip.v tb_m1.v
+xvlog.bat disp_seg.v disp_scan8.v key_debounce.v status_fsm.v led_state_drv.v disp_content.v option_sel.v smg_ip.v tb_m1.v
 xelab.bat -debug typical tb_m1 -snapshot tb_m1
 'run -all
 exit' | Set-Content -Encoding ASCII run.tcl
 xsim.bat tb_m1 -tclbatch run.tcl
 ```
 
-期望输出：`TOTAL_CASES = 52 / FAILED = 0 / RESULT = PASS`
+期望输出：`TOTAL_CASES = 68 / FAILED = 0 / RESULT = PASS`
 
 > **注意**：`xsim.bat -R` 在 `$finish` 后常不退出，用 `-tclbatch` 那套写法。
 
@@ -84,6 +85,11 @@ xsim.bat tb_m1 -tclbatch run.tcl
 | 中 | R15 | 循环三态（M1 调试） / 确认选项（M2+） |
 | 左 | V1 | 上一页 |
 | 右 | R11 | 下一页 |
+| **上** | **U4** | **选项 +1**（提问时） |
+| **下** | **R17** | **选项 −1**（提问时） |
+
+> 提问期间显示页强制锁定在第 3 页（`ASH 问题序号-选项号`），
+> 按上/下键即可看到选项数字变化。选项范围 0–8，两端回绕。
 
 | 灯 | 引脚 | 含义 |
 |---|---|---|
@@ -98,11 +104,11 @@ xsim.bat tb_m1 -tclbatch run.tcl
 |---|---|
 | 器件 | xc7a35tcsg324-1 |
 | 时钟 | 100 MHz (P17) |
-| LUT | 420 (2.02%) |
-| FF | 258 (0.62%) |
-| IO | 30 |
-| 时序 | WNS +4.628 ns，0 失败路径 |
-| 仿真 | 52 用例 0 失败 |
+| LUT | 570 (2.74%) |
+| FF | 337 (0.81%) |
+| IO | 32 |
+| 时序 | WNS +4.523 ns，0 失败路径 |
+| 仿真 | 68 用例 0 失败 |
 
 ---
 

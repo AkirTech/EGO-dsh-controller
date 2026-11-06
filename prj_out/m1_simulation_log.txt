@@ -25,12 +25,14 @@ source run.tcl
 
   [5] disp_content digit order and pages
 
+  [6] option_sel
+
 ------------------------------------------
-  TOTAL_CASES = 52
+  TOTAL_CASES = 68
   FAILED      = 0
   RESULT      = PASS
 ------------------------------------------
 
-$finish called at time : 346036 ns : File "K:/Verilog/_tmp_v2/tb_m1.v" Line 474
+$finish called at time : 346355 ns : File "K:/Verilog/_tmp_opt/tb_m1.v" Line 579
 ## exit
-INFO: [Common 17-206] Exiting xsim at Fri Nov  6 15:17:07 2026...
+INFO: [Common 17-206] Exiting xsim at Fri Nov  6 16:19:13 2026...

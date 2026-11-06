@@ -40,7 +40,7 @@ module disp_content (
     input  wire [3:0]  session,    // current session number (kept for M2+)
     input  wire [1:0]  page,       // 0=TIME, 1=STATE, 2=ASK
     input  wire [3:0]  q_index,    // current question number, 1-based (M2+)
-    input  wire [3:0]  q_total,    // questions in this batch (M2+)
+    input  wire [3:0]  option,     // currently highlighted option on page 2
     output reg  [47:0] chars,      // DK1 = chars[5:0], DK8 = chars[47:42]
     output reg  [7:0]  dps         // dps[0] = DK1, dps[7] = DK8
 );
@@ -266,18 +266,24 @@ module disp_content (
                 dk8 = C_BLANK;
             end
             //----------------------------------------------------------
-            // Page 2: ASK, "ASH 1-1"
+            // Page 2: ASK, "ASH 1-3"  (question index - selected option)
+            //
             //   DK1..DK3 = "ASH"  (H stands in for K, the table has no K)
             //   DK4 = current question index
             //   DK5 = dash
-            //   DK6 = total questions
+            //   DK6 = currently highlighted option, incremented by the up
+            //         and down keys while the question is pending
+            //
+            // The up key increments and the down key decrements, which is why
+            // the option field is the right-hand number: moving "up" in a menu
+            // means going further down the list in reading order.
             2'd2: begin
                 dk1 = C_A;
                 dk2 = C_S;
                 dk3 = C_H;
                 dk4 = nib_to_ch(q_index[3:0]);
                 dk5 = C_DASH;
-                dk6 = nib_to_ch(q_total[3:0]);
+                dk6 = nib_to_ch(option[3:0]);
             end
         endcase
     end

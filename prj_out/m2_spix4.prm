@@ -1,0 +1,11 @@
+===================================
+Configuration Memory information
+===================================
+File Format        MCS
+Interface          SPIX4
+Size               4M
+Start Address      0x00000000
+End Address        0x003FFFFF
+
+Addr1         Addr2         Date                    File(s)
+0x00000000    0x0021728B    Nov 11 19:33:14 2026    K:/Verilog/LessonProject/EGO-dsh-controller/prj_out/m2_spix4.bit

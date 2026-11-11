@@ -1,6 +1,6 @@
 # EGO-dsh-controller 设计方案
 
-> 版本 v2 · 2026-11-06
+> 版本 v4 · 2026-11-11
 > 目标板卡：EGO1（xc7a35tcsg324-1）· Vivado 2017.1 · 100 MHz
 > 配套主机：DeepSeek Harness（DSH）
 
@@ -9,8 +9,73 @@
 ## 0. 一句话概括
 
 用 EGO1 板卡做 DSH 的**物理控制面板**：八个七段数码管显示会话状态与时间，
-三个按键完成"选择/切换/回答"，两个指示灯映射 Agent 的三态；
-中间由一个本机 host 进程通过 USB 串口在 FPGA 与 DSH 之间做协议桥接。
+按键完成"选择/切换/回答"，两个指示灯映射 Agent 的三态；
+中间由 Python 进程通过串口在 FPGA 与 DSH 之间做协议桥接，
+DSH 插件再通过 stdin/stdout JSON 行驱动这个 Python 进程。
+
+---
+
+## 0.1 上板实测结论（2026-11-11 更新）
+
+这一节是**实机探测结果**，不是推测。所有结论都有对应的 Vivado 寄存器读数或
+Windows 设备枚举作依据。
+
+### 板卡接口布局（用户在板上逐一确认）
+
+| 编号 | 用途 | 说明 |
+|---|---|---|
+| **J22** | USB-JTAG | 插上即供电 + Vivado 烧写。**能烧 SRAM，但读不到 Flash ID** |
+| **J8** | **USB-UART** | 独立接口，需要单独的线。**CP2102，VID_10C4/PID_EA60** |
+| **J3** | 6-pin JTAG 排针 | 外接下载器用 |
+| **J4** | USB-A | **只能接键鼠**（经 PIC24FJ128 转 PS/2），不能传数据 |
+| **J5** | 2×18 扩展 IO | 可引出 UART，需自制接线 |
+| 三针跳线 | QSPI / 中针 / JTAG | **必须保持「中针 ↔ QSPI」**；切到 JTAG 侧而未接外部下载器会导致 USB 枚举失败（error 43）|
+
+> **没有独立 DC 供电口。** 板子只能靠 J22 或 J8 的 USB 供电，因此「换接口」等于断电，
+> SRAM 内容随之丢失。这是「每次都要重烧」的真正原因。
+
+### M2 综合与实现（本轮完成）
+
+之前 batch 综合报 `invalid command name "rt-undefined"`，本轮**重试后消失**
+（疑为当时残留状态导致）。完整流程已跑通：
+
+| 阶段 | 结果 |
+|---|---|
+| `synth_design` | 0 errors, 0 critical warnings |
+| `opt/place/route` | DRC 0 errors |
+| **时序** | **WNS +4.059 ns，WHS +0.106 ns，全部 MET，0 失败路径** |
+| **Slice LUTs** | **941 (4.52%)**  ← M1 是 570 |
+| **Slice Registers** | **978 (2.35%)** ← M1 是 337 |
+| **Bonded IOB** | **34** ← M1 是 32（+uart_tx/+uart_rx） |
+| bitstream | `prj_out/m2_spix4.bit`（2.2 MB，含 `SPI_BUSWIDTH=4`） |
+
+**已烧进板子 SRAM 并 `DONE=1`。**
+
+### 关于那 141 个综合警告
+
+绝大多数是 `8-3332` / `8-3331` / `8-6014`，内容为「未使用位被移除」：
+
+- `msg_payload[63:48]` 等高位（协议最长 48 位）
+- `len_r[7:4]`（LEN 最大 8）
+- 被优化器内联改名的中间信号（`ms_div`、`uptime` 等）
+
+**已用 `-flatten_hierarchy none` 复核**：`uptime` 有 40 个 cell、`elapsed` 有 37 个
+cell，功能完整保留。**这些警告是 Vivado 的命名优化噪声，不是缺陷。**
+
+### 已确认阻塞的
+
+| 事项 | 证据 | 影响 |
+|---|---|---|
+| ~~CP2102 缺驱动~~ | ~~错误码 28~~ | ✅ **已解决**：装好驱动后 COM11 正常，端到端已通 |
+| ~~Flash 读不到 ID~~ | ~~`Mfg ID: 0 ... 27-2251`~~ | ✅ **已解决**：真正原因是烧写时**未勾选 PRM 文件**。勾选后烧写成功，掉电保持已验证 |
+| **蓝牙模块扫不到** | BLE 扫描 146 个设备，无 CC41-A、无 FFE0/FFE1 服务 | 需先确认模块是否上电/广播 |
+
+### 文档更正（重要）
+
+| 旧说法 | 实际 |
+|---|---|
+| "CP2102 芯片"（v1–v3）→ "没有 CP210x"（v4 早期） | **两个都不完全对**。板上**有**独立 CP2102（J8 口），但**不在 J22 这条线上**。之前所有探测都插着 J22 |
+| "hw_server 已改 6000" | 补丁在，但 Vivado 实际仍连 `3121` 且成功。3121 当前可用 |
 
 ---
 
@@ -23,28 +88,37 @@
 | 按键驱动 | ✅ 完成 | `key_debounce.v`：两级同步 + 10 ms 消抖 + 800 ms 长按 |
 | 状态机 | ✅ 完成 | `status_fsm.v`：FREE / RUNNING / WAITING |
 | 指示灯 | ✅ 完成 | `led_state_drv.v`：双灯 K1/K6，灭·慢闪·常亮编码三态 |
-| 时序收敛 | ✅ 完成 | WNS +4.523 ns，32 个 IO 全部绑定 |
-| 实板验证 | ✅ 完成 | 用户已上板确认显示、按键、指示灯全部正常 |
+| 时序收敛 | ✅ 完成 | WNS +4.523 ns，32 个 IO 全部绑定（M1 数据） |
+| 实板验证 | ✅ 完成 | 用户已上板确认显示、按键、指示灯全部正常（M1） |
 | Git 仓库 | ✅ 完成 | `K:\Verilog\LessonProject\EGO-dsh-controller`，已推到 GitHub |
-| hw_server 端口 | ✅ 完成 | 3121 落在 Windows 保留段 3023-3122，已打补丁改用 6000 |
-| **串口通信层（Python）** | ⬜ **下一步** | 契约已定义，见 `SERIAL-PROTOCOL.md` |
-| DSH host 插件 | ⬜ 待做 | M3 |
+| hw_server 端口 | 🟡 见 §0.1 | 3121 当前可用；补丁在但未生效 |
+| **串口通信层（FPGA）** | ✅ **完成** | `uart_rx` / `uart_tx` / `frame_parser` / `frame_builder` / `link_ctrl`；仿真 73 用例 0 失败；**综合+实现通过**（WNS +4.059 ns，941 LUT），**已烧板** |
+| **串口通信层（Python）** | ✅ **完成** | `host/ego_bridge/`；244 个 pytest 用例全绿 |
+| **DSH host 插件** | 🟡 **部分完成** | 已挂 `agent/status` + 连接时校时；**提问/审批两个 seam 留到下一轮** |
+
+### M2 新增交付物
+
+| 文件 | 说明 |
+|---|---|
+| `LessonProject.srcs/sources_1/new/uart_tx.v` | 8N1 发送器，`ready/valid` 握手，无分频时钟 |
+| `LessonProject.srcs/sources_1/new/uart_rx.v` | 8N1 接收器，三级同步 + 中点采样 + 毛刺拒绝 |
+| `LessonProject.srcs/sources_1/new/frame_parser.v` | 帧头同步 + LEN 校验 + CRC8，错帧整帧丢弃 |
+| `LessonProject.srcs/sources_1/new/frame_builder.v` | 组帧发送，增量 CRC，一级保持寄存器 |
+| `LessonProject.srcs/sources_1/new/link_ctrl.v` | 协议层：消息解析、状态权威、发送仲裁、心跳、NACK |
+| `LessonProject.srcs/sources_1/new/tb_m2.v` | 自检测试平台，**73 用例 0 失败** |
+| `LessonProject.srcs/constrs_1/new/const1.xdc` | 新增 T4 / N5 串口引脚 |
+| `host/ego_bridge/*.py` | Python 桥接包（8 个模块） |
+| `host/dsh-plugin/` | DSH 插件（TypeScript） |
+| `docs/SERIAL-PROTOCOL.md` | 契约 **v2.1** |
 
 ### M1 已交付物
 
 | 文件 | 说明 |
 |---|---|
-| `LessonProject.srcs/sources_1/new/disp_seg.v` | 段码表 + 小数点注入（字符码 → 8 位段码） |
-| `LessonProject.srcs/sources_1/new/disp_scan8.v` | 8 位锁步扫描，支持逐位小数点 |
-| `LessonProject.srcs/sources_1/new/key_debounce.v` | 两级同步 + 10 ms 消抖 + 单击/长按 |
-| `LessonProject.srcs/sources_1/new/status_fsm.v` | FREE/RUNNING/WAITING 三态机 |
-| `LessonProject.srcs/sources_1/new/led_state_drv.v` | 状态 → 双灯模式映射（K1 常亮 / K6 灭·慢闪·常亮） |
-| `LessonProject.srcs/sources_1/new/option_sel.v` | 选项高亮（上/下增减、两端回绕）、确认锁存 |
-| `LessonProject.srcs/sources_1/new/disp_content.v` | 三个显示页的内容组织 + 时间计数 |
-| `LessonProject.srcs/sources_1/new/tb_m1.v` | 自检测试平台，45 用例 |
-| `prj_out/m1_buttons_leds.bit` | 可直接烧录的 bit 文件 |
-| `prj_out/m1_simulation_log.txt` | 仿真日志（45 用例 0 失败） |
-| `prj_out/m1_timing.rpt` / `m1_utilization.rpt` | 时序与资源报告 |
+| `disp_seg.v` / `disp_scan8.v` / `key_debounce.v` / `status_fsm.v` | M1 显示与按键基础模块 |
+| `led_state_drv.v` / `option_sel.v` / `disp_content.v` | 灯、选项、内容组织 |
+| `tb_m1.v` | 自检测试平台，68 用例 |
+| `prj_out/m1_buttons_leds.bit` | M1 可烧录 bit 文件 |
 
 ## 2. 关键约定：数码管字符顺序（务必先读）
 
@@ -125,15 +199,22 @@ out_LED3_NS[0] = J3    out_LED3_WE[0] = G3
 
 ### 3.3 串口
 
-CP2102 芯片，USB-CDC，Windows 枚举为 COMx。
+**桥接芯片型号：手册未给出。** 实机枚举时整块板在 USB 上只有一个节点
+`VID_03FD&PID_0008`（Xilinx USB Cable，`Class_FF`，驱动 `WinDriver6`），
+**没有 COMx**。详细的枚举证据与影响见
+[`SERIAL-PROTOCOL.md` §1.1](./SERIAL-PROTOCOL.md)。
 
 | 信号 | 原理图网络 | FPGA 球位 | 方向（按手册括注） |
 |---|---|---|---|
-| UART_TX | UART_RX (CP2102 视角) | **T4** | FPGA → PC |
-| UART_RX | UART_TX (CP2102 视角) | **N5** | PC → FPGA |
+| UART_TX | UART_RX (桥接芯片视角) | **T4** | FPGA → PC |
+| UART_RX | UART_TX (桥接芯片视角) | **N5** | PC → FPGA |
 
 > **注意方向**：手册括注"FPGA串口发送端/接收端"与网络名 `UART_RX`/`UART_TX`
 > 字面相反。上面按括注取，**首次联调必须实测**，搞反则完全不通。
+
+> **更正**：v3 之前写的"CP2102 芯片，USB-CDC，Windows 枚举为 COMx"是错的。
+> 手册没有任何地方提到 CP2102，实际枚举里也没有 CP210x 设备。
+> **当前状态：串口通路尚未打通**，这是本项目目前唯一的硬阻塞。
 
 ---
 
@@ -721,13 +802,200 @@ ego-bridge/
 
 | # | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| 1 | **T4/N5 哪个是 FPGA 的 TX** | 搞反则串口完全不通 | ⬜ **M2 第一步就要测** |
-| 2 | 波特率最终定 115200 还是 9600 | 手册示例用 9600 | ⬜ M2 决定 |
+| 1 | **T4/N5 哪个是 FPGA 的 TX** | 搞反则串口完全不通 | ⬜ 需要串口先能用 |
+| 2 | 波特率最终定 115200 还是 9600 | 手册示例用 9600 | ⬜ 同上 |
 | 3 | 小数点分隔的观感 | 硬件限制，已实板确认可接受 | ✅ 已关闭 |
 | 4 | 指示灯 K1/K6 引脚 | 已实板确认正常 | ✅ 已关闭 |
 | 5 | 交通灯子板是否真实存在 | 已改用板载 LED，不影响任何功能 | 低优先级 |
+| 6 | **板子的 COM 口从哪来** | 拿不到就没有 Python↔FPGA 通路 | 🔴 **最高优先级，见 §10.6** |
+| 7 | 是否需要掉电保持 | 影响是否必须烧 Flash | ⬜ 见 §10.6.4 |
 
-### 指示灯引脚（已实板验证）
+---
+
+## 10.5 上板结论与后续方案（2026-11-11）
+
+### 10.5.1 烧 mcs 是不是正确做法？
+
+**是，而且是唯一正确的做法。** 理由链：
+
+| 环节 | 事实 |
+|---|---|
+| `.bit` 烧到哪里 | FPGA 内部配置 SRAM，**掉电即失**（7 系列的定义如此） |
+| 板上有非易失存储器吗 | 有：N25Q32（32 Mbit / **4 MB**，3.3 V QSPI） |
+| FPGA 会从它启动吗 | **会**：实测 `MODE_PIN_M[2:0] = 001` = Master SPI |
+| 能直接烧 `.bit` 吗 | **不能**。Flash 需要带地址记录的配置流（`.mcs`/`.bin`） |
+| 你的 bit 多大 | 2.2 MB，4 MB 装得下 |
+
+所以链路是：`.bit` → `write_cfgmem` → `.mcs` → `program_hw_cfgmem` → 断电重启自动加载。
+
+**已交付脚本**：[`scripts/program_flash.tcl`](../scripts/program_flash.tcl)，
+支持 `-tclargs <bit> <buswidth>`，并带 `EGO_FLASH_DRY_RUN=1` 只生成镜像不碰硬件。
+
+### 10.5.2 `SPI_BUSWIDTH` 到底要不要设 4？
+
+**已经写进 `const1.xdc` 设成 4。** 依据：
+
+- N25Q32 支持 x4 读（Vivado `spi.cfg` 里 `X4_READ = TRUE`）
+- x1 加载 2.2 MB 约 1.7 s，x4 约 0.4 s
+
+**代价**：改了 XDC 就**必须重新生成 bit**。旧 bit 的头部永远写的是 1，
+拿它配 `SPIx4` 会直接报 `[Writecfgmem 68-20]`——这正是你遇到的"不匹配"。
+
+**回退路径**：如果 x4 之后板子不启动，按住 **S5（PROG）** 再上电即可清除配置，
+然后改回 1 重新生成。
+
+### 10.5.3 USB-A 口能不能用？
+
+**不能用于本项目。** 手册 §9 明确：J4 上的 USB-A 口是给**键盘鼠标**用的，
+经 **PIC24FJ128 转成 PS/2**（`PS2_CLK=K5`、`PS2_DATA=L4`）。
+
+| 事实 | 影响 |
+|---|---|
+| 它是 USB **Device** 口（转 PS/2），不是 Host | 不能接 U 盘/网卡/串口模块 |
+| 手册写"不支持 USB 集线器，只能连接一个鼠标或键盘" | 连键鼠都有限制 |
+| 协议终点是 PS/2，不是 USB | 想拿它传数据要自己写 PS/2 从机，且速率低（约 10–16 kHz 时钟） |
+
+**结论：这条路要写的代码远多于它解决的问题，放弃。**
+
+### 10.5.4 蓝牙模块怎么样？会不会简化工作？
+
+**技术上可行，而且是目前唯一"板上自带、随时可用"的无线通路**，但有明确代价。
+
+手册 §13 给出的事实：
+
+| 项目 | 值 |
+|---|---|
+| 型号 | BLE-CC41-A（**BLE**，不是经典蓝牙 SPP） |
+| FPGA 侧引脚 | `BT_RX = N2`（FPGA 发送）、`BT_TX = L3`（FPGA 接收） |
+| 波特率 | 1200–230400，**缺省 9600** |
+| 控制方式 | 支持 AT 命令 |
+
+优点：
+
+- **不依赖那个拿不到的 COM 口**，是绕开当前阻塞的最短路径
+- FPGA 侧改动很小：`uart_tx`/`uart_rx` 是参数化的，换两个引脚、换个波特率即可
+- PC 侧用 BLE 虚拟串口（Windows 原生 `BTHENUM` 就能生成 COM 口，本机已有 8 个）
+
+代价（必须提前知道）：
+
+1. **BLE 的吞吐很低**。BLE-CC41-A 这类模块走的是 BLE 透传，实测有效吞吐常在
+   几 KB/s 量级，而且**延迟不稳定**。对"按一下键、亮一个灯"完全够用，但比
+   115200 有线（约 11 KB/s）差，更比 x4 的启动加载慢。
+2. **配对是额外故障点**。Windows 的 BLE 串口需要先配对、且每次重连可能换 COM 号。
+3. **默认 9600 需要改**。要么发 AT 命令改模块波特率，要么把 FPGA 侧降到 9600。
+4. **本机那 8 个 `BTHENUM` 串口是电脑自带蓝牙的**，不是这块板的。要确认模块
+   能被搜到，得实测配对。
+
+**建议：作为 Plan B 并行验证，不作为主线。** 具体见 §10.6.3。
+
+### 10.5.5 有没有更省事的方案？
+
+按"改动量 ÷ 收益"排序：
+
+| 方案 | 改动 | 风险 | 评价 |
+|---|---|---|---|
+| **A. 修好现有 COM 口** | 装驱动 / 换 USB 线 / 换口 | 低 | **首选**，见 §10.6.1 |
+| **B. 用 J5 扩展口 + 外部 USB-TTL** | 改 XDC 两行 + 插一个几块钱的模块 | 低 | 稳，但多一根线 |
+| **C. 改用蓝牙** | 改 XDC 两行 + 改波特率 | 中（配对/吞吐） | 无线，可接受 |
+| **D. USB-A 转 PS/2** | 写 PS/2 从机 | 高 | 放弃 |
+| **E. 纯视觉（不用串口）** | 无 | 无 | 降级方案：板子只显示，不交互 |
+
+**方案 E 值得单独说**：如果串口实在拿不到，项目仍然可以交付一个**只读面板**——
+但 DSH 状态怎么送到板子？没有通路。所以 E 实际不成立，除非退回"手动按键切三态"
+（就是现在的 M1 行为）。**这说明串口是本项目的硬依赖，必须解决。**
+
+---
+
+## 10.6 串口排查与备选方案
+
+### 10.6.1 方案 A：先把现有口修好（先试这个，5 分钟）
+
+按可能性从高到低：
+
+| # | 检查 | 怎么做 | 判断 |
+|---|---|---|---|
+| 1 | **USB 线是数据线吗** | 换一根确定能传数据的线 | 很多线只有电源脚。换线后重新枚举 |
+| 2 | **是不是插在了 J3（6-pin JTAG 排针）** | 看线插的是 Type-C 还是排针 | 若插排针则只有 JTAG，没有 UART。**必须用 Type-C** |
+| 3 | **换一个 USB 口** | 直连笔记本，不走 Hub | 排除了 Hub 供电/枚举问题 |
+| 4 | **装 FTDI 驱动** | 从 [ftdichip.com VCP 驱动](https://ftdichip.com/drivers/vcp-drivers/) 装官方驱动 | 若之前被 WinDriver 独占，装 VCP 后可能出现第二个 COM |
+| 5 | **重扫设备** | 设备管理器 → 扫描硬件改动 | |
+
+> **重要判断依据**：如果换线/换口后设备管理器里**多出一个 USB Serial Port / COMx**，
+> 说明这条路通了。如果始终只有一个 `Xilinx USB Cable`，说明这颗芯片的
+> 第二通道在当前固件/驱动组合下就是不给 Windows 用，**不要再耗时间，直接走 B 或 C**。
+
+**为什么可能真的拿不到**：已实测 `CompatibleIds` 全为 `Class_FF`、
+`BusReportedDeviceDesc = "XILINX"`。这是 Xilinx 固件把 FTDI 芯片重新枚举后的
+形态，整颗芯片被 WinDriver 独占。这种情况下 Windows 侧**不会**出现第二个接口。
+Xilinx 自家板卡（如 Digilent 系列）通常会把 UART 通道作为独立接口暴露，
+但这块 EGO1 的固件配置是否如此，**只有实测才知道**。
+
+### 10.6.2 方案 B：J5 扩展口 + 外部 USB-TTL（最稳）
+
+**思路**：绕开板上那个拿不到的桥接，直接用扩展口引两路 IO 接一个 USB-TTL 模块。
+
+| 项目 | 值 |
+|---|---|
+| 连接器 | J5（2×18，32 路双向 IO，每路有过流过压保护） |
+| 可用引脚 | 例如 `B16`、`B17`、`A15`、`A16`、`A13`、`A14` 等（手册 §14） |
+| 需要的外部件 | 任意 USB-TTL（CH340 / CP2102 / FT232 模块，几块钱） |
+| RTL 改动 | **零**（`uart_tx`/`uart_rx` 是参数化的） |
+| XDC 改动 | **两行**：把 `uart_tx`/`uart_rx` 指向 J5 的两个引脚 |
+
+代价：多一个 USB 设备和一根杜邦线；需要确认模块电压是 3.3 V（**不要接 5 V**）。
+
+**这是风险最低的兜底方案**，建议同时准备。
+
+### 10.6.3 方案 C：蓝牙（BLE-CC41-A）
+
+| 项目 | 值 |
+|---|---|
+| FPGA 引脚 | `BT_RX = N2`（FPGA→模块）、`BT_TX = L3`（模块→FPGA） |
+| 波特率 | 模块缺省 **9600**，支持 AT 命令改 |
+| PC 侧 | Windows 配对本机 BLE → 生成 COM 口（本机已有 8 个 `BTHENUM` 串口，是电脑自带蓝牙的） |
+
+**必须先验证的三件事**：
+
+1. 模块能被 Windows 搜到并配对（手册没说出厂是否已配对/是否需 AT 初始化）
+2. 配对后是否稳定生成 COM 口，重连后 COM 号是否变化
+3. 实际吞吐（决定它能不能支撑 115200 的设计；不行就降到 9600）
+
+**FPGA 侧改动**：XDC 两行 + `BAUD` 参数从 115200 改 9600（或发 AT 命令把模块改到 115200）。
+
+**风险**：BLE 透传的延迟不稳定，对"按键→灯"够用，但不适合高频心跳。
+若采用，建议把 `STATUS_RPT` 心跳从 1 Hz 放宽到 5 s。
+
+### 10.6.4 断电测试怎么做（回答"是不是每次都要重烧"）
+
+现在 `BOOT_STATUS` 显示本次是**从 Flash 干净启动**的，所以"每次都丢"
+这个前提本身需要复验：
+
+1. 关掉 Vivado 的 Hardware Manager（避免它偷偷重配）
+2. **彻底拔掉 Type-C**，等 5 秒
+3. 插回，观察
+4. 判断标准：
+   - **数码管亮起并显示 M1 内容** → Flash 里有镜像，**不需要重烧**，
+     之前"每次都要重烧"的印象来自更早的某次
+   - **只有电源灯 D18 亮、数码管不亮** → Flash 是空的/坏的，
+     需要按 §10.5.1 烧一次 mcs
+5. 若已烧过 mcs 仍不启动 → `SPI_BUSWIDTH` 不匹配，按 §10.5.2 回退
+
+---
+
+## 10.7 需要你确定的事
+
+| # | 事项 | 说明 |
+|---|---|---|
+| 1 | **断电测试** | 见 §10.6.4。这能直接验证"要不要重烧"这个前提 |
+| 2 | **串口优先走哪条** | A（修现有口，先试）/ B（J5 + USB-TTL，最稳）/ C（蓝牙，无线）。我建议 A→B，C 作为并行验证 |
+| 3 | **`DEBUG_MODE` 要不要改 0** | 改成 0 才是 M2 行为（PC 权威）。但改了就**没有中键循环三态了**，纯板测试会不方便 |
+| 4 | **是否接受 x4** | 已写进 XDC。若不想承担重烧风险，我改回 1 |
+| 5 | **M2 综合仍未跑通** | Vivado 批处理报 `invalid command name "rt-undefined"`。**要么在 GUI 里手动跑一次 synthesis+implementation**，要么接受"只有仿真证据、没有时序/资源数字" |
+| 6 | **Flash 里要不要留一个"保底"镜像** | 若担心烧坏，可先用 `BITSTREAM.CONFIG.CONFIGFALLBACK` 做双镜像（golden + update）。当前是简单单镜像，够用但无兜底 |
+
+---
+
+## 10.8 指示灯引脚（已实板验证）
 
 **手册 5.3 节的编号：**
 

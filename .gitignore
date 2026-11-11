@@ -26,6 +26,7 @@
 
 *.ltx
 *.mcs
+!prj_out/*.mcs
 *.wdb
 *.wcfg
 
@@ -35,5 +36,24 @@
 
 _tmp_*/
 _backup_*/
+_m2check/
 Thumbs.db
 desktop.ini
+
+# ==============================================================================
+# Host side (Python bridge + DSH plugin)
+# ==============================================================================
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# The plugin's compiled output is committed on purpose: the DSH loader imports
+# lib/ directly and has no build step of its own. `src/` is the source of truth,
+# so a stale lib/ is a real hazard -- rebuild with `npx tsc -p tsconfig.json` after editing.
+# node_modules/ is never committed; the loader resolves peer packages from the
+# profile instead.
+host/dsh-plugin/node_modules/

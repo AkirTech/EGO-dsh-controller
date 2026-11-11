@@ -1,0 +1,9 @@
+# Loading the ego-bridge plugin into a DSH profile.
+#
+# `name` is resolved against the profile directory, so the plugin has to be
+# installed there (a pnpm dependency) or referenced by absolute path from the
+# profile's own cordis.patch.yml. This file is only a fallback used when the
+# package is itself a bundle.
+- insert:
+    - id: ego-bridge
+      name: 'dsh-ego-bridge'

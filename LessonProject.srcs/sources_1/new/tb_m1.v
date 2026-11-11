@@ -115,33 +115,43 @@ module tb_m1;
     //==================================================================
     reg        dc_rst_n = 1'b0;
     reg  [1:0] dc_state = 2'd0;
-    reg  [3:0] dc_day   = 4'd1;
-    reg  [3:0] dc_sess  = 4'h1;
     reg  [1:0] dc_page  = 2'd0;
     reg  [3:0] dc_qi    = 4'h1;
     reg  [3:0] dc_opt   = 4'h0;
     reg        ce1      = 1'b0;
+    // Time load interface (M2): a one-cycle `load` copies the *_in fields.
+    // M1 has no serial link, so the testbench keeps load low and drives the
+    // counters through the 1 Hz enable exactly as before.
+    reg        dc_load  = 1'b0;
+    reg  [4:0] dc_hour_in = 5'd0;
+    reg  [5:0] dc_min_in  = 6'd0;
+    reg  [5:0] dc_sec_in  = 6'd0;
+    reg  [3:0] dc_day_in  = 4'd1;
     wire [47:0] dc_chars;
     wire [7:0]  dc_dps;
 
     disp_content u_dc (
-        .clk     (clk),
-        .rst_n   (dc_rst_n),
-        .ce_1hz  (ce1),
-        .state   (dc_state),
-        .day     (dc_day),
-        .session (dc_sess),
-        .page    (dc_page),
-        .q_index (dc_qi),
-        .option  (dc_opt),
-        .chars   (dc_chars),
-        .dps     (dc_dps)
+        .clk       (clk),
+        .rst_n     (dc_rst_n),
+        .ce_1hz    (ce1),
+        .load      (dc_load),
+        .hour_in   (dc_hour_in),
+        .minute_in (dc_min_in),
+        .second_in (dc_sec_in),
+        .day_in    (dc_day_in),
+        .state     (dc_state),
+        .page      (dc_page),
+        .q_index   (dc_qi),
+        .option    (dc_opt),
+        .chars     (dc_chars),
+        .dps       (dc_dps)
     );
 
     //==================================================================
     // Part 4b : option_sel
     //==================================================================
     reg        os_active  = 1'b0;
+    reg  [3:0] os_max     = 4'd8;      // runtime upper bound (M2: from QUESTION_OPEN)
     reg        os_up      = 1'b0;
     reg        os_down    = 1'b0;
     reg        os_confirm = 1'b0;
@@ -149,12 +159,11 @@ module tb_m1;
     wire [3:0] os_conf_idx;
     wire       os_confirmed;
 
-    option_sel #(
-        .MAX_INDEX (4'd8)
-    ) u_os (
+    option_sel u_os (
         .clk           (clk),
         .rst_n         (rst_n),
         .active        (os_active),
+        .max_index     (os_max),
         .up            (os_up),
         .down          (os_down),
         .confirm       (os_confirm),
@@ -395,8 +404,12 @@ module tb_m1;
 
         dc_page  = 2'd0;
         dc_state = 2'd0;
-        dc_day   = 4'd1;
-        dc_sess  = 4'h1;
+        // The day now arrives through the load interface rather than as a
+        // direct port; M1 behaviour is a constant weekday 1, which is what
+        // day_in already holds after reset.
+        dc_day_in = 4'd1;
+        dc_load   = 1'b1; @(posedge clk); dc_load = 1'b0;
+        repeat (3) @(posedge clk);
 
         // At 00:00:00 with day 1, the payload reads
         //   DK1 '1' DK2 blank DK3 '0' DK4 '0' DK5 '0' DK6 '0' DK7 '0' DK8 '0'

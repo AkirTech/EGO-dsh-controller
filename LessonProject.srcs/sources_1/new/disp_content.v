@@ -17,13 +17,19 @@
 //     that bug shipped once already.
 //
 //   PAGES (cycled by the left/right keys)
-//     Page 0 TIME   "HH.MM.SS"  with a decimal point after HH and after MM.
+//     Page 0 TIME   "D HH.MM.SS"  with a decimal point after HH and after MM.
 //                   The DP is the cheapest colon the display has: it costs no
 //                   extra digit, so all six time digits stay visible.
-//     Page 1 STATE  "F  01   "  first digit is the state letter, then the
-//                   session number, then blanks.
-//     Page 2 ASK    "A5k 1-2 "  shown only while a question is pending; the
-//                   counters stay at 1-1 until the serial link drives them.
+//     Page 1 STATE  "0SH F    "  "DSH" then the state letter.
+//     Page 2 ASK    "ASH i-k "  shown only while a question is pending.
+//
+//   TIME SOURCE
+//     The counters free-run at 1 Hz from reset, and a TIME_SYNC frame loads
+//     them: `load` is a one-cycle pulse that copies hour_in / minute_in /
+//     second_in / day_in into the working registers. The PC only has to send
+//     it once per connection, because the board keeps counting on its own.
+//     A load takes priority over the 1 Hz tick in the same cycle, so the
+//     loaded value is never immediately overwritten by a stale tick.
 //
 //   Character codes match disp_seg.v:
 //     6'h00..6'h09 = '0'..'9'   6'h0A='A' 6'h0B='b' 6'h0C='C' 6'h0D='d'
@@ -35,11 +41,15 @@ module disp_content (
     input  wire        clk,
     input  wire        rst_n,
     input  wire        ce_1hz,     // one-cycle pulse at 1 Hz
+    // One-cycle pulse: load the time from the inputs below (TIME_SYNC).
+    input  wire        load,
+    input  wire [4:0]  hour_in,    // 0..23
+    input  wire [5:0]  minute_in,  // 0..59
+    input  wire [5:0]  second_in,  // 0..59
+    input  wire [3:0]  day_in,     // 1..7, Monday = 1
     input  wire [1:0]  state,      // 0=FREE, 1=RUNNING, 2=WAITING
-    input  wire [3:0]  day,        // day of week, 1..7 (M1: constant 1)
-    input  wire [3:0]  session,    // current session number (kept for M2+)
     input  wire [1:0]  page,       // 0=TIME, 1=STATE, 2=ASK
-    input  wire [3:0]  q_index,    // current question number, 1-based (M2+)
+    input  wire [3:0]  q_index,    // current question number, 1-based
     input  wire [3:0]  option,     // currently highlighted option on page 2
     output reg  [47:0] chars,      // DK1 = chars[5:0], DK8 = chars[47:42]
     output reg  [7:0]  dps         // dps[0] = DK1, dps[7] = DK8
@@ -60,16 +70,27 @@ module disp_content (
     localparam [5:0] C_BLANK = 6'h1B;
 
     //------------------------------------------------------------------
-    // HH:MM:SS counters
+    // HH:MM:SS counters plus the day-of-week digit.
+    //
+    // A TIME_SYNC load wins over the 1 Hz tick in the same cycle: loading a
+    // value and immediately incrementing it would show the PC's time plus
+    // one second, and the PC has no way to compensate for that.
     //------------------------------------------------------------------
     reg [5:0] sec, min;
     reg [4:0] hour;
+    reg [3:0] day_r;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            sec  <= 6'd0;
-            min  <= 6'd0;
-            hour <= 5'd0;
+            sec   <= 6'd0;
+            min   <= 6'd0;
+            hour  <= 5'd0;
+            day_r <= 4'd1;
+        end else if (load) begin
+            sec   <= second_in;
+            min   <= minute_in;
+            hour  <= hour_in;
+            day_r <= day_in;
         end else if (ce_1hz) begin
             if (sec == 6'd59) begin
                 sec <= 6'd0;
@@ -180,25 +201,6 @@ module disp_content (
         end
     endfunction
 
-    // Tens digit of a 0..15 session number (0 or 1).
-    function [3:0] session_tens;
-        input [3:0] v;
-        begin
-            session_tens = (v < 4'd10) ? 4'd0 : 4'd1;
-        end
-    endfunction
-
-    // Ones digit of a 0..15 session number.
-    function [3:0] session_ones;
-        input [3:0] v;
-        reg [4:0] rem;
-        begin
-            rem = {1'b0, v};
-            if (v >= 4'd10) rem = rem - 5'd10;
-            session_ones = rem[3:0];
-        end
-    endfunction
-
     //------------------------------------------------------------------
     // Page composition.
     //
@@ -233,7 +235,7 @@ module disp_content (
             // appended at the very end was noise, while a weekday is the one
             // piece of wall-clock context a clock page should carry.
             2'd0: begin
-                dk1 = nib_to_ch(day);
+                dk1 = nib_to_ch(day_r);
                 dk2 = C_BLANK;
                 dk3 = nib_to_ch(hour_tens(hour));
                 dk4 = nib_to_ch(hour_ones(hour));

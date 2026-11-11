@@ -3,6 +3,33 @@
 # Pin source: official EGo1 User Manual sections 3, 5.1, 5.3, 5.4
 # ==============================================================================
 
+# ==============================================================================
+# Bitstream: how the FPGA reads the QSPI flash at power-up
+#
+# The board carries an N25Q32 (32 Mbit / 4 MB, 3.3 V) QSPI flash. This property
+# goes into the .bit header and tells the FPGA how many data lines to use when
+# it loads that flash on power-up:
+#
+#   SPI_BUSWIDTH 1 -> ~1.7 s to load a 2.2 MB image
+#   SPI_BUSWIDTH 4 -> ~0.4 s (the N25Q32 supports x4 read; verified in
+#                     Vivado's data/xicom/spi.cfg: X4_READ = TRUE)
+#
+# IT MUST MATCH the -interface value passed to write_cfgmem, otherwise Vivado
+# refuses to make the flash file:
+#
+#   ERROR: [Writecfgmem 68-20] SPI_BUSWIDTH property is set to "1" on bitfile
+#   ... This property has to be set to "4" to generate a configuration memory
+#   file for the SPIX4 interface.
+#
+# Changing this property changes the bitstream, so a NEW bitstream must be
+# generated -- an existing .bit cannot be reused.
+#
+# Set to 4 for a fast boot. If a board ever fails to start after flashing,
+# hold the PROG button (S5) while powering on to clear the configuration, then
+# re-flash; falling back to 1 here is the other way out.
+# ==============================================================================
+set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
+
 # ---- System clock: 100 MHz oscillator on P17 ----
 set_property PACKAGE_PIN P17 [get_ports clk]
 set_property IOSTANDARD LVCMOS33 [get_ports clk]
@@ -26,6 +53,23 @@ set_property IOSTANDARD LVCMOS33 [get_ports {key[1]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {key[2]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {key[3]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {key[4]}]
+
+# ==============================================================================
+# Serial link to the on-board CP2102 USB-UART bridge (manual section 8)
+#
+#   uart_tx = FPGA -> PC : ball T4, net named UART_RX from the CP2102's side
+#   uart_rx = PC   -> FPGA: ball N5, net named UART_TX from the CP2102's side
+#
+# The manual's own parenthetical ("FPGA serial transmit / receive") and the
+# net names are worded from opposite ends, so the names look swapped. The
+# assignment below follows the manual's parenthetical: T4 is the FPGA's
+# transmitter. If a loopback test shows nothing at all, swapping these two
+# PACKAGE_PIN lines is the first thing to try -- the RTL does not change.
+# ==============================================================================
+set_property PACKAGE_PIN T4 [get_ports uart_tx]
+set_property PACKAGE_PIN N5 [get_ports uart_rx]
+set_property IOSTANDARD LVCMOS33 [get_ports uart_tx]
+set_property IOSTANDARD LVCMOS33 [get_ports uart_rx]
 
 # ==============================================================================
 # Indicator lamps, two of them

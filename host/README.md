@@ -78,7 +78,28 @@ python -m ego_bridge.cli send "AA 55 01 04 0C 22 38 05 91"
 期望：板卡显示 `5 12.34.56`（星期五 12:34:56）。
 这一帧的 CRC 与文档示例逐字节一致，**已实测通过**。
 
-### 5. 没有板卡：跑模拟器
+### 5. 提问通路（Q&A）
+
+插件已挂 `user-questions/request` 与 `approval/request`。当 Agent 调用
+`ask_user_question` 时：
+
+1. **GUI 照常弹出提问卡片**（能看到题目和选项文字）
+2. **板卡同时**显示 `ASH 题号-选项号`
+3. 上/下键切换高亮选项，**中键确认**
+
+**谁先答谁赢**：在 GUI 点选则板卡释放；在板卡按键则 Agent 立刻收到答案。
+
+> 板卡先答时 GUI 卡片不会自动消失（DSH 的 lifecycle 限制），
+> 手动关一下即可。原因见下方「已知边界」。
+
+手工验证串口层的 question 通路（不经过插件）：
+
+```powershell
+python -m ego_bridge.cli question 5 3 1
+# 板卡显示 "ASH 1-0"，操作按键后 CLI 打印 ANSWER
+```
+
+### 6. 没有板卡：跑模拟器
 
 ```powershell
 python -m ego_bridge.cli monitor --sim
@@ -135,15 +156,50 @@ node --experimental-strip-types --test "test/*.test.ts"
 | `uptime_s` 走墙钟秒 | 短会话里一直是 0，「重启识别」测不出来 |
 | 不回 `ACK` | 与真板一致（v2 下 FPGA 不主动发 ACK） |
 
-### 本轮**没有**做的事
+### 提问/审批：GUI 与板卡并行（**已知限制**）
 
-- **插件不挂 `user-questions/request`、`approval/request`**。
-  串口层和协议层已支持 `QUESTION_OPEN` / `QUESTION_CLOSE` / `ANSWER`，
-  但 DSH 事件到板卡的通路留到下一轮。现在提问只能用 CLI 手动验证。
-- **`WAITING` 三态中插件只能产出 FREE / RUNNING**。
-  `deriveBoardState()` 支持 WAITING（有 `pending` 就优先生效），
-  但没有事件源去填 `pending`——那个源正是上面两个未接的 seam。
-- 板卡 `DEBUG_MODE` 上板时要置 **0**，否则中键会与 PC 抢状态机。
+两个 seam 都已挂上。行为是 **`next()` 一定会被调用**，所以 GUI 照常渲染提问卡片，
+板卡同时显示 `ASH 题号-选项号`，**谁先答谁赢**：
+
+| 场景 | 结果 |
+|---|---|
+| 在 GUI 点选 | GUI 赢，板卡释放（`sessions.abandon`） |
+| 在板卡按键 | 板卡赢，Agent 立刻收到答案 |
+| 板卡不出答案 / 链路断 | 全部交还 GUI |
+
+> **为什么 `next()` 必须调用**：waterfall 里不调用 `next()` 直接返回 = **短路**，
+> GUI 的 `answerQuestion` 根本不会执行，卡片也不会 `publish()`。
+> 早期版本就是短路写的，现象是「GUI 完全不显示提问，只能翻详情看」。
+> `test/race.test.ts` 第一条用例专门锁死这个回归。
+
+**已知限制：板卡先答时，GUI 卡片不会自动消失。**
+
+原因是 DSH 的 GUI 卡片只在 `waterfall.result` 结算时销毁，而结算的触发源只有四个：
+
+| 触发源 | 板卡答完后是否发生 |
+|---|---|
+| GUI 用户点选 → `channel.resolve()` | ❌ 用户没点 |
+| `channel.delegate()` | ❌ 无此路径 |
+| `channel.reject()` | ❌ 不适用 |
+| `request.signal` abort | ❌ `exec.signal` 不随工具结束而 abort |
+
+插件**无权 abort 那个 signal**，DSH 也没有提供从外部关闭卡片的 API
+（`ctx.userQuestions.answer()` 只对 **timed 模式**的 `continued` 问题有效，
+`ask_user_question` 默认是 **legacy 模式**，用不上）。
+
+**功能本身是正确的**：按下后答案确实传给了 Agent，只是 UI 没刷新。
+手动点一下卡片的关闭按钮即可。
+
+要彻底消除这个现象，只能把 `tool-ask-user` 改成 `mode: timed`（有 `callId`
+就能用 `answer()` 主动关闭），但那会引入超时语义，与 legacy 的「无限期等待」不同。
+
+### 板卡行为的其他限制
+
+- **`WAITING` 目前只能来自 STATE_SET**。插件已经会透传，但还没有事件源去填
+  `pending`（那需要另接 seam）。
+- **板卡 `DEBUG_MODE` 必须是 0**（本项目已设为默认），否则中键会与 PC 抢状态机。
+- **选项上限 9**：超过就直接交还 GUI，不截断（避免一个决策分散在两处）。
+- **多选问题、无选项问题**：一律交还 GUI，一个数字表达不了。
 
 ### 星期约定
 

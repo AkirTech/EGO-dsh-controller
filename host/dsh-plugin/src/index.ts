@@ -28,11 +28,21 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only: this import declares the `agent/status` event on the Cordis
-// Events interface. Without it `ctx.on('agent/status', ...)` is not typed.
+// Type-only imports: these declare the events on the Cordis Events interface.
+// Without them `ctx.on('agent/status' | 'user-questions/request' |
+// 'approval/request', ...)` is not typed.
 import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-user-questions'
+import type {} from '@deepseek-ai/dsh-user-approval'
 
 import { Backend, type BridgeEvent } from './backend.ts'
+import {
+  approvalOutcomeFor,
+  planQuestions,
+  type BoardQuestion,
+  type QuestionItem,
+} from './questions.ts'
+import { SessionQueue } from './session.ts'
 import {
   BOARD_STATE_NAMES,
   type BoardState,
@@ -57,6 +67,13 @@ export interface Config {
   resyncHourly?: boolean
   /** Session slot shown on the board, 0..15. Display only. */
   session?: number
+  /**
+   * How long to wait for one board answer before handing the request to the
+   * GUI. Re-armed after each confirmed question, so a long multi-question walk
+   * is not cut short. 0 waits forever, which matches the legacy
+   * `ask_user_question` tool (it blocks until answered or cancelled).
+   */
+  questionTimeoutMs?: number
   /** Log every frame the board reports. Noisy; off by default. */
   verbose?: boolean
 }
@@ -74,6 +91,7 @@ interface ResolvedConfig {
   readonly backendDir: string | undefined
   readonly resyncHourly: boolean
   readonly session: number
+  readonly questionTimeoutMs: number
   readonly verbose: boolean
 }
 
@@ -86,6 +104,10 @@ function resolve(raw: Config): ResolvedConfig {
     backendDir: raw.backendDir,
     resyncHourly: raw.resyncHourly ?? false,
     session: raw.session ?? 0,
+    // 0 = wait forever. The legacy ask_user_question blocks indefinitely, so a
+    // deadline would abandon perfectly normal thinking pauses; the abort signal
+    // is the real cancellation path.
+    questionTimeoutMs: raw.questionTimeoutMs ?? 0,
     verbose: raw.verbose ?? false,
   }
 }
@@ -168,6 +190,251 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
     pushState()
   }
 
+  //------------------------------------------------------------------
+  // Question / approval handling
+  //
+  // The board has one ASK page showing "<question index>-<option index>", so a
+  // whole request is walked one question at a time by SessionQueue. What the
+  // board cannot express (no options, too many options, multi-select) is handed
+  // straight back to the GUI by returning next().
+  //
+  // Every path that ends without a complete answer returns next(). That is the
+  // fail-safe property the design depends on: an unplugged board, a timeout, or
+  // a cancelled request must leave the GUI's own question card working exactly
+  // as before.
+  //------------------------------------------------------------------
+  const sessions = new SessionQueue({
+    show: (reqId, index) => {
+      const question = activePlan[index - 1]
+      if (question === undefined) return
+      // Tell the board how many options to allow, which question this is, and
+      // which request it belongs to.
+      backend.send({
+        cmd: 'question_open',
+        req_id: reqId,
+        n_options: question.labels.length,
+        q_index: index,
+      })
+      log(`QUESTION_OPEN req=${reqId} q=${index}/${activePlan.length} options=${question.labels.length}`)
+    },
+    hide: (reqId) => {
+      backend.send({ cmd: 'question_close', req_id: reqId })
+      log(`QUESTION_CLOSE req=${reqId}`)
+    },
+  })
+
+  /** The questions of the request currently on the board, in order. */
+  let activePlan: readonly BoardQuestion[] = []
+  /** Base request id handed to the next walk; wraps at 256. */
+  let nextReqId = 1
+
+  /**
+   * Wait for a full answer, showing the questions on the board.
+   *
+   * @param questions - the request's questions.
+   * @param signal - harness cancellation.
+   * @returns the answers, or undefined when the board could not serve them.
+   */
+  const askOnBoard = async (
+    questions: readonly QuestionItem[],
+    signal: AbortSignal | undefined,
+  ): Promise<Map<number, number> | undefined> => {
+    const plan = planQuestions(questions, nextReqId)
+    if (plan.refused !== undefined || plan.questions.length === 0) {
+      log(`board cannot serve this request (${plan.refused ?? 'empty'}); leaving it to the GUI`)
+      return undefined
+    }
+    // Do not serve the panel while the link is down: the walk would just time
+    // out, and the GUI can answer immediately.
+    if (!linkUp) {
+      log('link down; leaving the request to the GUI')
+      return undefined
+    }
+
+    const reqId = plan.questions[0]!.reqId
+    nextReqId = (reqId + plan.questions.length) & 0xff
+    activePlan = plan.questions
+
+    const timeoutMs = config.questionTimeoutMs
+    const outcome = await sessions.walk({
+      reqId,
+      total: plan.questions.length,
+      timeoutMs,
+      ...signal !== undefined ? { signal } : {},
+    })
+    activePlan = []
+
+    if (outcome.kind === 'abandoned') {
+      log(`board walk ended: ${outcome.reason}`)
+      return undefined
+    }
+    return outcome.value
+  }
+
+  //------------------------------------------------------------------
+  // Question and approval seams
+  //
+  // Both are waterfalls: returning a value claims the request, calling next()
+  // passes it to the GUI. Every failure path calls next(), so the panel being
+  // absent, busy, or unable to express the question never breaks the UI.
+  //------------------------------------------------------------------
+
+  ctx.on(
+    'user-questions/request',
+    async (
+      request: {
+        questions?: readonly QuestionItem[]
+        agent?: unknown
+        signal?: AbortSignal
+      },
+      next: () => Promise<{ answers: Array<{ id: string; selected: string[] }> }>,
+    ) => {
+      try {
+        // A subagent's question is not for the panel.
+        if (isSubagent(request.agent)) {
+          log('ignoring user-questions request from a subagent')
+          return await next()
+        }
+
+        const questions = request.questions ?? []
+        if (questions.length === 0) return await next()
+
+        // Can the board serve this one at all? Checking first means an
+        // unusable request never disturbs the GUI.
+        const plan = planQuestions(questions, nextReqId)
+        if (plan.refused !== undefined || plan.questions.length === 0 || !linkUp) {
+          log(`board cannot serve this request (${plan.refused ?? (linkUp ? 'empty' : 'link down')})`)
+          return await next()
+        }
+
+        // ----------------------------------------------------------------
+        // Race the board against the GUI.
+        //
+        // Calling next() is what makes the GUI render its own question card,
+        // so it MUST be called. Cutting straight to a board answer (returning
+        // without next()) short-circuits the waterfall and the user never sees
+        // the question on screen -- which also means they cannot read it,
+        // because the board only shows a one-digit option index.
+        //
+        // Whichever side answers first wins. If the GUI wins, the board walk is
+        // abandoned; if the board wins, the GUI's card is torn down by the
+        // waterfall settling, which is exactly the desired behaviour.
+        // ----------------------------------------------------------------
+        const boardRun = askOnBoard(questions, request.signal)
+        const guiRun = next()
+        // The loser may still reject later (a cancelled GUI wait, a disposed
+        // session). Swallow it so it never surfaces as an unhandled rejection.
+        boardRun.catch(() => {})
+        guiRun.catch(() => {})
+
+        const first = await Promise.race([
+          boardRun.then(value => ({ from: 'board' as const, value })),
+          guiRun.then(value => ({ from: 'gui' as const, value })),
+        ])
+
+        if (first.from === 'gui') {
+          // The user answered on screen. Release the panel so it stops showing
+          // a question nobody is waiting for.
+          sessions.abandon('preempted')
+          log('answered in the GUI; releasing the board')
+          return first.value
+        }
+
+        const answers = first.value
+        if (answers === undefined) {
+          // The board walk ended without a usable answer. The GUI run is still
+          // pending, so hand the request back to it by awaiting next()'s result.
+          log('board walk produced no complete answer; waiting for the GUI')
+          return await guiRun
+        }
+
+        // Rebuild the batch against the ORIGINAL question objects so ids always
+        // match what the caller sent.
+        const items: Array<{ id: string; selected: string[] }> = []
+        for (let i = 0; i < questions.length; i += 1) {
+          const question = questions[i]!
+          const optionIndex = answers.get(i + 1)
+          const label = optionIndex === undefined
+            ? undefined
+            : (question.options ?? [])[optionIndex]?.label
+          if (label === undefined) {
+            // Incomplete: never fabricate an empty selection, which the tool
+            // reads as "the user explicitly skipped".
+            log('incomplete board answers; waiting for the GUI')
+            return await guiRun
+          }
+          items.push({ id: question.id, selected: [label] })
+        }
+        log(`answered on the board: ${JSON.stringify(items)}`)
+        return { answers: items }
+      } catch (error) {
+        log(`user-questions handler threw: ${String(error)}; handing to the GUI`)
+        return await next()
+      }
+    },
+  )
+
+  ctx.on(
+    'approval/request',
+    async (
+      request: {
+        toolName?: string
+        agent?: unknown
+        signal?: AbortSignal
+      },
+      next: () => Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>,
+    ) => {
+      try {
+        if (isSubagent(request.agent)) return await next()
+        if (!linkUp) return await next()
+
+        // An approval has exactly two answers on this panel: index 0 allows,
+        // anything else rejects. Wrapping it as a normal two-option question
+        // reuses the whole walk mechanism instead of duplicating it.
+        const questions: QuestionItem[] = [{
+          id: 'approval',
+          question: `approve ${request.toolName ?? 'tool'}?`,
+          options: [{ label: 'allow' }, { label: 'reject' }],
+        }]
+
+        // Race the board against the GUI for the same reason as user questions:
+        // next() is what renders the on-screen approval prompt, and the user
+        // must be able to see WHAT they are approving.
+        const boardRun = askOnBoard(questions, request.signal)
+        const guiRun = next()
+        boardRun.catch(() => {})
+        guiRun.catch(() => {})
+
+        const first = await Promise.race([
+          boardRun.then(value => ({ from: 'board' as const, value })),
+          guiRun.then(value => ({ from: 'gui' as const, value })),
+        ])
+
+        if (first.from === 'gui') {
+          sessions.abandon('preempted')
+          log('approval answered in the GUI; releasing the board')
+          return first.value
+        }
+
+        const answers = first.value
+        if (answers === undefined) return await guiRun
+
+        const optionIndex = answers.get(1)
+        if (optionIndex === undefined) return await guiRun
+        const outcome = approvalOutcomeFor(['allow', 'reject'], optionIndex, 'allow')
+        if (outcome === undefined) return await guiRun
+        log(`approval ${request.toolName ?? 'tool'} -> ${outcome} (board)`)
+        return outcome
+      } catch (error) {
+        // Fail closed: an approval that cannot be answered must go back to the
+        // GUI, not become an accidental grant.
+        log(`approval handler threw: ${String(error)}; handing to the GUI`)
+        return await next()
+      }
+    },
+  )
+
+
   const handleBackendEvent = (event: BridgeEvent): void => {
     switch (event.evt) {
       case 'ready': {
@@ -187,6 +454,9 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
           handshake()
         } else {
           lastUptime = undefined
+          // A lost link cannot serve a question: release whatever is waiting so
+          // the GUI can take over instead of the user staring at a dead board.
+          sessions.abandon('disposed')
         }
         return
       }
@@ -222,11 +492,24 @@ export function apply(ctx: Context, rawConfig: Config = {}): void {
         }
         return
       }
+      case 'answer': {
+        // The board confirmed one question. Feed it to the walker; it either
+        // advances to the next question or settles the whole batch.
+        const event_ = {
+          reqId: typeof event.req_id === 'number' ? event.req_id : -1,
+          qIndex: typeof event.q_index === 'number' ? event.q_index : -1,
+          option: typeof event.option === 'number' ? event.option : -1,
+          ...typeof event.elapsed_ms === 'number' ? { elapsedMs: event.elapsed_ms } : {},
+        }
+        const consumed = sessions.offer(event_)
+        log(`ANSWER req=${event_.reqId} q=${event_.qIndex} option=${event_.option}` +
+          (consumed ? '' : ' (no active question; ignored)'))
+        return
+      }
       case 'key':
-      case 'answer':
-        // The question seam is not wired in this round. Answers are still
-        // surfaced in the log so a manual CLI run and a plugin run behave
-        // the same way.
+        // Key presses are reported for completeness. The board already
+        // interprets up/down/centre locally, so nothing here changes a
+        // question's state -- the ANSWER frame carries the decision.
         log(`board event: ${JSON.stringify(event)}`)
         return
       case 'error': {

@@ -43,6 +43,13 @@ export interface Config {
     resyncHourly?: boolean;
     /** Session slot shown on the board, 0..15. Display only. */
     session?: number;
+    /**
+     * How long to wait for one board answer before handing the request to the
+     * GUI. Re-armed after each confirmed question, so a long multi-question walk
+     * is not cut short. 0 waits forever, which matches the legacy
+     * `ask_user_question` tool (it blocks until answered or cancelled).
+     */
+    questionTimeoutMs?: number;
     /** Log every frame the board reports. Noisy; off by default. */
     verbose?: boolean;
 }

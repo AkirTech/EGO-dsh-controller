@@ -188,15 +188,45 @@ export function apply(ctx, rawConfig = {}) {
     //------------------------------------------------------------------
     // Host events
     //------------------------------------------------------------------
-    // `agent/status` is scope-filtered and fires per agent. A subagent
-    // reporting `running` should not light the panel, because the panel is
-    // about the session the human is watching. Any running turn counts here:
-    // the board has a single activity lamp and "something is working" is the
-    // honest summary.
+    /**
+     * Per-agent running flags.
+     *
+     * `agent/status` is emitted once per agent, so a flat boolean is wrong: with
+     * two agents alive, the subagent going idle would clear the lamp while the
+     * main agent is still working, and vice versa. Tracking each agent's own
+     * state and deriving "is anything busy" fixes that.
+     *
+     * Subagents are excluded on purpose. The panel sits on the user's desk to
+     * show what the session THEY are watching is doing; a background helper
+     * grinding through a search should not make the panel blink. `origin` is the
+     * documented way to tell them apart (session/types.ts: 'subagent').
+     */
+    const runningAgents = new Set();
+    const isSubagent = (agent) => {
+        const session = agent?.session;
+        return session?.header?.origin === 'subagent';
+    };
+    const recomputeRunning = () => {
+        const next = runningAgents.size > 0;
+        if (next === agentRunning)
+            return;
+        agentRunning = next;
+        pushState();
+    };
     ctx.on('agent/status', (payload) => {
         try {
-            agentRunning = payload.status === 'running';
-            pushState();
+            const id = payload.agent?.id ?? 'unknown';
+            if (isSubagent(payload.agent)) {
+                // A subagent's activity is not the panel's business. Its status is
+                // still logged so a surprising "no lamp" can be explained.
+                log(`ignoring subagent ${id} status=${payload.status}`);
+                return;
+            }
+            if (payload.status === 'running')
+                runningAgents.add(id);
+            else
+                runningAgents.delete(id);
+            recomputeRunning();
         }
         catch (error) {
             log(`agent/status handler threw: ${String(error)}`);

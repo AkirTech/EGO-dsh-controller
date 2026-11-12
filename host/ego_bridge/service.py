@@ -73,9 +73,14 @@ EXIT_ERROR = 1
 
 
 def log(text: str) -> None:
-    """写日志到 **stderr**（stdout 只允许 JSON）。"""
+    """写日志到 **stderr**（stdout 只允许 JSON）。
+
+    不加 ``[ego-bridge]`` 前缀：宿主（DSH 插件）已经在透传时加了，两边都加会
+    出现 ``[ego-bridge] [ego-bridge] ...`` 的双前缀。独立运行 ``service.py``
+    或 CLI 时少个前缀不影响可读性，stderr 本身就能区分来源。
+    """
     try:
-        print(f"[ego-bridge] {text}", file=sys.stderr, flush=True)
+        print(text, file=sys.stderr, flush=True)
     except Exception:  # noqa: BLE001 - 日志失败也不能影响服务
         pass
 

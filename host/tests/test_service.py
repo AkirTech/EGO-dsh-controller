@@ -389,8 +389,14 @@ def test_subprocess_stdout_is_clean_json():
         json.loads(line)  # 抛异常就说明 stdout 被污染了
 
     assert not text.startswith("\ufeff"), "stdout 不能有 BOM"
-    # stderr 里才有日志
-    assert b"[ego-bridge]" in stderr or stderr == b""
+
+    # Logs go to stderr, never stdout. The "[ego-bridge]" prefix is added by
+    # the DSH plugin when it relays these lines, so it is deliberately absent
+    # here -- asserting on it would just re-test the host's formatting.
+    # What matters is that stderr carries readable text and stdout does not.
+    if stderr:
+        assert stderr.decode("utf-8", "replace").strip() != "", "stderr 不应只有空白"
+        assert b"{" not in stderr.split(b"\n")[0], "stderr 第一行不该是 JSON"
 
 
 def test_subprocess_set_state_sends_frame():

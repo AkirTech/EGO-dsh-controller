@@ -183,7 +183,7 @@ cd dsh-plugin && node --experimental-strip-types --test "test/*.test.ts"   # 20 
 
 | # | 限制 | 影响 | 备注 |
 |---|---|---|---|
-| 1 | DSH 插件只接了 `agent/status` + 校时 | 提问/审批通路未接 | 串口层已支持 `QUESTION_OPEN`/`ANSWER`，可用 CLI 手动验证 |
+| 1 | 板卡先答时 GUI 卡片不会自动消失 | 需手动点关闭 | DSH 的 lifecycle 限制，插件无权 abort 那个 signal。功能正确，仅是 UI 刷新问题。详见 **[host/README.md](host/README.md)** 的「已知边界」 |
 | 2 | DSH 插件目前配置为 `simulate: true` | 默认跑模拟器 | 改成 `false` 接真板 |
 | 3 | Vivado batch 综合曾报 `rt-undefined` | 偶发 | 重试即可，本轮已跑通 |
 | 4 | 蓝牙模块扫不到 | 未使用 | 已有原理图，LED2 可判断状态 |

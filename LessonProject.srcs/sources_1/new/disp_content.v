@@ -75,10 +75,19 @@ module disp_content (
     // A TIME_SYNC load wins over the 1 Hz tick in the same cycle: loading a
     // value and immediately incrementing it would show the PC's time plus
     // one second, and the PC has no way to compensate for that.
+    //
+    // The weekday rolls over with the clock: at 23:59:59 the hour wraps to 00
+    // and the day advances, wrapping 7 -> 1 so it stays in the 1..7 range the
+    // wire format and TIME_SYNC use (Monday = 1 .. Sunday = 7). Without that
+    // increment the board would show the correct time under a weekday frozen
+    // at whatever time the last TIME_SYNC carried.
     //------------------------------------------------------------------
     reg [5:0] sec, min;
     reg [4:0] hour;
     reg [3:0] day_r;
+
+    // Set when the current 1 Hz tick completes a 24-hour day.
+    wire day_rollover = ce_1hz && (sec == 6'd59) && (min == 6'd59) && (hour == 5'd23);
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -103,6 +112,13 @@ module disp_content (
                 end
             end else begin
                 sec <= sec + 6'd1;
+            end
+
+            // Weekday rollover, in the same tick that wraps the hour.
+            // 7 (Sunday) wraps to 1 (Monday); an out-of-range loaded value is
+            // pulled back into 1..7 here rather than being carried forward.
+            if (day_rollover) begin
+                day_r <= (day_r >= 4'd7) ? 4'd1 : day_r + 4'd1;
             end
         end
     end

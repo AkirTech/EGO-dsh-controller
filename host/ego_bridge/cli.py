@@ -48,6 +48,7 @@ from .messages import (
 from .protocol import MAX_PAYLOAD, decode_frame, format_hex
 from .transport import (
     DEFAULT_BAUD,
+    HAVE_PYSERIAL,
     PortNotFoundError,
     SerialTransport,
     TransportError,
@@ -215,6 +216,19 @@ def cmd_send(args) -> int:
         sim_fpga.close()
         return 0
 
+    #------------------------------------------------------------------
+    # Bare mode: write the bytes to an open port, no bridge and therefore no
+    # handshake.
+    #
+    # This is the whole point for raw-byte debugging. `Bridge` sends its own
+    # TIME_SYNC on connect (host clock) and a STATE_SET, so any frame written
+    # through it races the handshake -- a user trying to set 23:59:50 sees the
+    # board snap back to the host time instead. The default stays through the
+    # bridge (it verifies the link); --raw bypasses it.
+    #------------------------------------------------------------------
+    if args.raw:
+        return _send_raw_bare(args, data)
+
     bridge = _make_bridge(args)
     deadline = time.monotonic() + 1.5
     while not bridge.connected and time.monotonic() < deadline:
@@ -230,6 +244,65 @@ def cmd_send(args) -> int:
         return 0
     _err("发送失败")
     return 3
+
+
+def _send_raw_bare(args, data: bytes) -> int:
+    """直接写串口，**不做任何握手**。
+
+    调试原始字节时握手是噪声：它会发 TIME_SYNC（本机时间）和 STATE_SET，
+    把调用者想设置的数值覆盖掉。
+
+    打开端口时刻意把 DTR/RTS 拉低：pyserial 默认两者为 True，CP2102 会因此
+    在 UART 线上产生一次电平跳变，板卡的 uart_rx 若正好在这时看到下降沿就会
+    当作起始位、读进一个假字节。先置低再等一小段空闲，让接收端回到 IDLE。
+    """
+    if not HAVE_PYSERIAL:
+        _err("pyserial 未安装，无法使用真实串口（pip install pyserial）")
+        return 1
+
+    import serial  # 局部导入：模拟器模式下不需要
+
+    port_name = args.port or find_port(args.port)
+    try:
+        port = serial.Serial()
+        port.port = port_name
+        port.baudrate = args.baud
+        port.timeout = 0.2
+        port.write_timeout = 1.0
+        # Keep the modem-control lines quiet; see the docstring.
+        port.dtr = False
+        port.rts = False
+        port.open()
+    except Exception as exc:  # noqa: BLE001
+        _err(f"打开 {port_name} 失败：{exc}")
+        _err("提示：DSH 插件在跑时会独占端口，先停掉 dsh web")
+        return 1
+
+    try:
+        # Drop anything the board already queued so the read-back is the reply
+        # to THIS frame, not a stale heartbeat.
+        port.reset_input_buffer()
+        time.sleep(0.25)          # let any in-flight character finish
+        port.reset_input_buffer()
+
+        port.write(data)
+        port.flush()
+        _info(f"已发送 {len(data)} 字节（裸模式，未握手）：{format_hex(data)}")
+
+        watch = max(0.0, float(args.watch))
+        if watch > 0:
+            deadline = time.monotonic() + watch
+            got = bytearray()
+            while time.monotonic() < deadline:
+                chunk = port.read(64)
+                if chunk:
+                    got += chunk
+            _info(f"{watch:.1f} 秒内收到 {len(got)} 字节")
+            if got:
+                _info(f"  {format_hex(bytes(got))}")
+        return 0
+    finally:
+        port.close()
 
 
 # ---------------------------------------------------------------- 语义命令
@@ -333,6 +406,18 @@ def make_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("send", parents=[common], help="发送原始十六进制字节")
     p.add_argument("hex", help='十六进制字节串，如 "AA 55 01 04 0C 22 38 05 91"')
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help="裸模式：直接写串口，不做握手（设置时间时必须用它，"
+             "否则握手发的 TIME_SYNC 会覆盖你要发的值）",
+    )
+    p.add_argument(
+        "--watch",
+        type=float,
+        default=0.0,
+        help="裸模式下发完继续读取的秒数（默认 0，不读）",
+    )
     p.set_defaults(func=cmd_send)
 
     p = sub.add_parser("sync-time", parents=[common], help="发 TIME_SYNC")

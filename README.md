@@ -12,7 +12,7 @@
 | **FPGA（Verilog）M1** | ✅ 完成，已上板验证 |
 | **FPGA（Verilog）M2 串口** | ✅ **完成：综合+实现通过，已烧板** |
 | **串口通信（Python）** | ✅ 完成，pytest 244 用例全绿 |
-| **DSH host 插件** | 🟡 只接了 `agent/status` + 校时；提问/审批下一轮 |
+| **DSH host 插件** | ✅ `agent/status` + 校时 + **提问/审批两个 seam** |
 | **Python ↔ 真板通路** | ✅ **已打通（COM11，端到端实测通过）** |
 | **掉电保持** | ✅ **已验证（烧 Flash + 长按 PROG）** |
 

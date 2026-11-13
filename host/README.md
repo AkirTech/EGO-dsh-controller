@@ -25,7 +25,9 @@ host/
 │   ├── src/backend.ts   管理 Python 子进程
 │   ├── src/state.ts     三态映射（纯函数）
 │   ├── src/time.ts      星期/校时（纯函数）
-│   ├── src/index.ts     挂 agent/status，装配事件
+│   ├── src/questions.ts 提问/审批映射（纯函数）
+│   ├── src/session.ts   板卡会话队列（一次一个，多题串行）
+│   ├── src/index.ts     挂三个 seam，装配事件
 │   ├── lib/             构建产物（已提交，loader 直接 import）
 │   └── test/            node:test
 └── tests/               pytest（244 个用例）
@@ -72,11 +74,17 @@ python -m ego_bridge.cli sync-time      # 用本机时间校时，数码管应�
 ### 4. 验收清单第 1 条（契约 §5）
 
 ```powershell
-python -m ego_bridge.cli send "AA 55 01 04 0C 22 38 05 91"
+python -m ego_bridge.cli send "AA 55 01 04 0C 22 38 05 91" --raw
 ```
 
 期望：板卡显示 `5 12.34.56`（星期五 12:34:56）。
 这一帧的 CRC 与文档示例逐字节一致，**已实测通过**。
+
+> **`--raw` 很重要。** 不加它时 `send` 走 `Bridge`，而 Bridge 的连接握手会先发
+> 一条**用本机时间**的 `TIME_SYNC` —— 你要是想设 23:59:50 测跨日，会被立刻覆盖回
+> 当前时间。`--raw` 跳过握手、把 DTR/RTS 置低、清空接收缓冲后再发。
+>
+> 想顺便确认板子收到，加 `--watch 0.5` 读回一小段心跳。
 
 ### 5. 提问通路（Q&A）
 
@@ -136,7 +144,7 @@ StatusReport(state=0, session=0, pending=0, flags=0, uptime_s=72)
 cd host
 python -m pytest
 
-# 插件：20 个用例（11 纯函数 + 5 端到端 + 4 生命周期）
+# 插件：58 个用例（映射 17 + 会话 13 + 竞态 5 + 迁移 11 + 端到端 5 + 生命周期 7）
 cd host\dsh-plugin
 node --experimental-strip-types --test "test/*.test.ts"
 ```

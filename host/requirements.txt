@@ -1,0 +1,6 @@
+# Runtime dependency of the ego_bridge package (real boards only; the
+# simulator needs nothing beyond the standard library).
+pyserial>=3.5
+
+# Test runner.
+pytest>=8.0

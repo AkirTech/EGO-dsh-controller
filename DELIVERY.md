@@ -66,9 +66,9 @@ EGO-dsh-controller/
 │       ├── tb_m1.v                   自检平台（68 用例）
 │       └── tb_m2.v                   自检平台（73 用例）
 ├── prj_out/                          交付固件
-│   ├── m2_spix4.bit                  最新固件（SRAM 烧写用）
-│   ├── m2_spix4.mcs                  Flash 烧写用（SPIx4）
-│   ├── m2_spix4.prm                  **烧 Flash 时必须勾选**
+│   ├── m2_daysync.bit                  最新固件（SRAM 烧写用）
+│   ├── m2_daysync.mcs                  Flash 烧写用（SPIx4）
+│   ├── m2_daysync.prm                  **烧 Flash 时必须勾选**
 │   ├── m2_timing.rpt / m2_utilization.rpt
 │   └── m1_*.{bit,rpt}                M1 历史归档
 ├── host/                             上位机
@@ -111,8 +111,8 @@ EGO-dsh-controller/
 1. Vivado → Open Hardware Manager → Auto Connect
 2. 右键器件 → `Add Configuration Memory Device`
 3. 器件选 **`n25q32-3.3v-spi-x1_x2_x4`**（3.3V，不是 1.8V）
-4. Configuration file 选 `prj_out/m2_spix4.mcs`
-5. **✅ 勾选 PRM 文件** `prj_out/m2_spix4.prm`
+4. Configuration file 选 `prj_out/m2_daysync.mcs`
+5. **✅ 勾选 PRM 文件** `prj_out/m2_daysync.prm`
 6. 勾选 Erase / Program / Verify
 7. 烧完后**长按 PROG（S5）** 重新加载
 
@@ -160,7 +160,7 @@ python -m ego_bridge.cli send "AA 55 01 04 0C 22 38 05 91"
 
 ```powershell
 cd host && python -m pytest                    # 244 用例
-cd dsh-plugin && node --experimental-strip-types --test "test/*.test.ts"   # 20 用例
+cd dsh-plugin && node --experimental-strip-types --test "test/*.test.ts"   # 58 用例
 ```
 
 ---
@@ -169,11 +169,11 @@ cd dsh-plugin && node --experimental-strip-types --test "test/*.test.ts"   # 20 
 
 | 项目 | 数值 |
 |---|---|
-| 时序 | **WNS +4.059 ns，WHS +0.106 ns，0 失败路径** |
-| Slice LUTs | **941 (4.52%)** |
+| 时序 | **WNS +4.543 ns，WHS +0.132 ns，0 失败路径** |
+| Slice LUTs | **967 (4.65%)** |
 | Slice Registers | **978 (2.35%)** |
 | Bonded IOB | **34** |
-| 仿真 | tb_m1 68/68、tb_m2 73/73 |
+| 仿真 | tb_m1 68/68、tb_m2 73/73、tb_day_rollover 30/30、tb_uart_rx 11/11（共 182） |
 | Python 测试 | 244 全部通过 |
 | bitstream | 2.2 MB |
 

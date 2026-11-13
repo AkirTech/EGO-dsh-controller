@@ -105,9 +105,10 @@
 
 ### 🚀 让 Agent 帮你装
 
-把下面整段**原样**贴给 DeepSeek Harness（或任何能执行命令的 Agent）：
+选定一个工作区，作为你想安装本项目的地方。
+然后把下面整段**原样**贴给 DeepSeek Harness（或任何能执行命令的 Agent）：
 
-> 请帮我在 `K:\Verilog\LessonProject\EGO-dsh-controller` 安装 ego-dsh-controller 的 host 侧，
+> 请帮我在 `此目录下` 安装 ego-dsh-controller 的 host 侧，
 > 并按下面步骤执行，每一步做完告诉我结果，遇到失败先停下来问我：
 >
 > 1. **检查环境**：`python --version`、`node --version`，确认 Python ≥ 3.10、Node ≥ 20。
@@ -125,15 +126,16 @@
 >    ```yaml
 >    - insert:
 >        - id: ego-bridge
->          name: 'K:/Verilog/LessonProject/EGO-dsh-controller/host/dsh-plugin/lib/index.js'
+>          name: '{你的安装目录}/host/dsh-plugin/lib/index.js'
 >          config:
 >            simulate: false        # 没有板卡时改 true
 >            baudRate: 115200
->            backendDir: 'K:/Verilog/LessonProject/EGO-dsh-controller/host'
+>            backendDir: '{你的安装目录}/host'
 >            session: 0
 >            questionTimeoutMs: 0
 >            verbose: true
 >    ```
+>    其中，`{你的安装目录}`形如`“D:\\applications\\EGO-dsh-controller\\”`
 >    追加前先备份该文件。
 > 8. **验证加载**：重启 `dsh web`，终端应出现
 >    `[ego-bridge] backend ready (port=COMx sim=false)` 和 `[ego-bridge] link up`。
